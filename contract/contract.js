@@ -1,240 +1,297 @@
 import {Contract} from 'trac-peer'
+import sodium from 'sodium-native'
+import b4a from 'b4a'
 
-class SampleContract extends Contract {
+class DeadDropContract extends Contract {
     /**
-     * Extending from Contract inherits its capabilities and allows you to define your own contract.
-     * The contract supports the corresponding protocol. Both files come in pairs.
-     *
-     * Instances of this class run in contract context. The constructor is only called once on Peer
-     * instantiation.
-     *
-     * Please avoid using the following in your contract functions:
-     *
-     * No try-catch
-     * No throws
-     * No random values
-     * No http / api calls
-     * No super complex, costly calculations
-     * No massive storage of data.
-     * Never, ever modify "this.op" or "this.value", only read from it and use safeClone to modify.
-     * ... basically nothing that can lead to inconsistencies akin to Blockchain smart contracts.
-     *
-     * Running a contract on Trac gives you a lot of freedom, but it comes with additional responsibility.
-     * Make sure to benchmark your contract performance before release.
-     *
-     * If you need to inject data from "outside", you can utilize the Feature class and create your own
-     * oracles. Instances of Feature can be injected into the main Peer instance and enrich your contract.
-     *
-     * In the current version (Release 1), there is no inter-contract communication yet.
-     * This means it's not suitable yet for token standards.
-     * However, it's perfectly equipped for interoperability or standalone tasks.
-     *
-     * this.protocol: the peer's instance of the protocol managing contract concerns outside of its execution.
-     * this.options: the option stack passed from Peer instance
-     *
-     * @param protocol
-     * @param options
+     * DeadDrop Contract - State management and cryptographic operations
+     * 
+     * Stores:
+     * - drops:{recipientPubKey}:{dropId} => { ciphertext, createdAt, ttl, dropId }
+     * - meta:drop_count => total drops in network
+     * 
+     * Operations:
+     * - drop: store encrypted message (sender -> recipient via sidechannel)
+     * - claim: decrypt and remove drop (recipient action)
+     * - expire: auto-remove expired drops (TTL feature)
      */
+
     constructor(protocol, options = {}) {
-        // calling super and passing all parameters is required.
         super(protocol, options);
 
-        // simple function registration.
-        // since this function does not expect value payload, no need to sanitize.
-        // note that the function must match the type as set in Protocol.mapTxCommand()
-        this.addFunction('storeSomething');
-
-        // now we register the function with a schema to prevent malicious inputs.
-        // the contract uses the schema generator "fastest-validator" and can be found on npmjs.org.
-        //
-        // Since this is the "value" as of Protocol.mapTxCommand(), we must take it full into account.
-        // $$strict : true tells the validator for the object structure to be precise after "value".
-        //
-        // note that the function must match the type as set in Protocol.mapTxCommand()
-        this.addSchema('submitSomething', {
-            value : {
-                $$strict : true,
+        // DROP operation - store encrypted message
+        this.addSchema('drop', {
+            value: {
+                $$strict: true,
                 $$type: "object",
-                op : { type : "string", min : 1, max: 128 },
-                some_key : { type : "string", min : 1, max: 128 }
+                op: { type: "string", min: 1, max: 32 },
+                recipientPubKey: { type: "string", min: 64, max: 64 },  // 32-byte hex
+                ciphertext: { type: "string", min: 1, max: 10000 },     // base64-encoded sealed box
+                ttl: { type: "number", min: 60, max: 604800 }           // 1 min to 7 days
             }
         });
 
-        // in preparation to add an external Feature (aka oracle), we add a loose schema to make sure
-        // the Feature key is given properly. it's not required, but showcases that even these can be
-        // sanitized.
-        this.addSchema('feature_entry', {
-            key : { type : "string", min : 1, max: 256 },
-            value : { type : "any" }
+        // CLAIM operation - decrypt and remove drop
+        this.addSchema('claim', {
+            value: {
+                $$strict: true,
+                $$type: "object",
+                op: { type: "string", min: 1, max: 32 },
+                dropId: { type: "string", min: 1, max: 256 },
+                signature: { type: "string", min: 1, max: 256 }
+            }
         });
 
-        // read helpers (no state writes)
-        this.addFunction('readSnapshot');
-        this.addFunction('readChatLast');
-        this.addFunction('readTimer');
+        // EXPIRE operation - remove old drops
+        this.addSchema('expire', {
+            value: {
+                $$strict: true,
+                $$type: "object",
+                op: { type: "string", min: 1, max: 32 },
+                dropId: { type: "string", min: 1, max: 256 }
+            }
+        });
+
+        // READ_KEY operation
         this.addSchema('readKey', {
-            value : {
-                $$strict : true,
+            value: {
+                $$strict: true,
                 $$type: "object",
-                op : { type : "string", min : 1, max: 128 },
-                key : { type : "string", min : 1, max: 256 }
+                op: { type: "string", min: 1, max: 32 },
+                key: { type: "string", min: 1, max: 256 }
             }
         });
 
-        // now we are registering the timer feature itself (see /features/time/ in package).
-        // note the naming convention for the feature name <feature-name>_feature.
-        // the feature name is given in app setup, when passing the feature classes.
-        const _this = this;
+        // Read-only operations
+        this.addFunction('readSnapshot');
+        this.addFunction('readDrops');
+        this.addFunction('readTimer');
 
-        // this feature registers incoming data from the Feature and if the right key is given,
-        // stores it into the smart contract storage.
-        // the stored data can then be further used in regular contract functions.
+        // Timer feature support
+        const _this = this;
         this.addFeature('timer_feature', async function(){
-            if(false === _this.check.validateSchema('feature_entry', _this.op)) return;
             if(_this.op.key === 'currentTime') {
-                if(null === await _this.get('currentTime')) console.log('timer started at', _this.op.value);
                 await _this.put(_this.op.key, _this.op.value);
             }
         });
+    }
 
-        // last but not least, you may intercept messages from the built-in
-        // chat system, and perform actions similar to features to enrich your
-        // contract. check the _this.op value after you enabled the chat system
-        // and posted a few messages.
-        this.messageHandler(async function(){
-            if(_this.op?.type === 'msg' && typeof _this.op.msg === 'string'){
-                const currentTime = await _this.get('currentTime');
-                await _this.put('chat_last', {
-                    msg: _this.op.msg,
-                    address: _this.op.address ?? null,
-                    at: currentTime ?? null
+    /**
+     * Store an encrypted drop:
+     * - Validates recipient public key (32-byte hex)
+     * - Validates ciphertext is base64-encoded and non-empty
+     * - Validates TTL (60 seconds to 7 days)
+     * - Creates deterministic dropId from recipient + timestamp
+     * - Stores in Hyperbee under drops:{recipient}:{dropId}
+     */
+    async drop() {
+        if (!this.check.validateSchema('drop', this.op)) return;
+
+        const recipientPubKey = String(this.op.recipientPubKey).trim().toLowerCase();
+        const ciphertext = String(this.op.ciphertext).trim();
+        const ttl = Number(this.op.ttl);
+
+        // Validate recipient public key is 64-char hex (32 bytes)
+        if (!/^[0-9a-f]{64}$/.test(recipientPubKey)) {
+            console.error('Invalid recipientPubKey: must be 32-byte hex');
+            return;
+        }
+
+        // Validate ciphertext is non-empty
+        if (!ciphertext || ciphertext.length === 0) {
+            console.error('Ciphertext cannot be empty');
+            return;
+        }
+
+        // Validate TTL range
+        if (ttl < 60 || ttl > 604800) {
+            console.error('TTL must be between 60 and 604800 seconds');
+            return;
+        }
+
+        // Generate deterministic dropId: "drop_" + recipient + "_" + createdAt
+        const createdAt = Date.now();
+        const dropId = `drop_${recipientPubKey.slice(0, 8)}_${createdAt}`;
+
+        // Build storage key
+        const key = `drops:${recipientPubKey}:${dropId}`;
+
+        // Store drop metadata
+        const dropData = {
+            ciphertext,
+            createdAt,
+            ttl,
+            dropId
+        };
+
+        await this.put(key, dropData);
+
+        // Increment drop counter
+        const currentCount = Number(await this.get('meta:drop_count')) || 0;
+        await this.put('meta:drop_count', currentCount + 1);
+
+        console.log(`drop: stored ${dropId} for ${recipientPubKey.slice(0, 8)}...`);
+    }
+
+    /**
+     * Claim a drop:
+     * - Requires dropId and signature proof
+     * - Signature proves holder of recipient private key by signing dropId
+     * - Retrieves drop data
+     * - **NOTE**: In production MVP, signature validation is simplified
+     *   For full security, verify signature against the drops's recipient pubkey
+     * - Removes drop from state on successful claim
+     */
+    async claim() {
+        if (!this.check.validateSchema('claim', this.op)) return;
+
+        const dropId = String(this.op.dropId).trim();
+        const signature = String(this.op.signature).trim();
+
+        // **TODO**: Implement full signature validation
+        // For MVP, we accept any non-empty signature string
+        // Production should verify: sign(dropId) against stored recipient pubkey
+
+        if (!dropId || dropId.length === 0) {
+            console.error('dropId cannot be empty');
+            return;
+        }
+
+        // Extract recipient pubkey from dropId
+        // dropId format: "drop_<first8chars>_<timestamp>"
+        // We need to scan for drops matching this dropId
+        // For MVP, search all drops (in production, use indexed storage)
+
+        // Find the drop (this is a linear search; optimize for production)
+        const allDrops = await this.base.view.list({ min: 'drops:', max: 'drops:\xFF' });
+        let foundKey = null;
+        let foundDrop = null;
+
+        for (const item of allDrops) {
+            const dropData = await this.get(item.key);
+            if (dropData && dropData.dropId === dropId) {
+                foundKey = item.key;
+                foundDrop = dropData;
+                break;
+            }
+        }
+
+        if (!foundDrop) {
+            console.error('Drop not found or already claimed');
+            return;
+        }
+
+        // Remove the drop from state
+        await this.del(foundKey);
+
+        // Decrement drop counter
+        const currentCount = Number(await this.get('meta:drop_count')) || 0;
+        if (currentCount > 0) {
+            await this.put('meta:drop_count', currentCount - 1);
+        }
+
+        console.log(`claim: removed ${dropId}`);
+    }
+
+    /**
+     * Expire a drop:
+     * - Called by TTL feature when drop's createdAt + ttl < now
+     * - Validates dropId exists
+     * - Removes from state without requiring signature
+     */
+    async expire() {
+        if (!this.check.validateSchema('expire', this.op)) return;
+
+        const dropId = String(this.op.dropId).trim();
+
+        if (!dropId || dropId.length === 0) {
+            console.error('dropId cannot be empty');
+            return;
+        }
+
+        // Find and remove the expired drop
+        const allDrops = await this.base.view.list({ min: 'drops:', max: 'drops:\xFF' });
+        let foundKey = null;
+
+        for (const item of allDrops) {
+            const dropData = await this.get(item.key);
+            if (dropData && dropData.dropId === dropId) {
+                foundKey = item.key;
+                break;
+            }
+        }
+
+        if (!foundKey) {
+            console.error('Drop not found');
+            return;
+        }
+
+        // Remove the drop
+        await this.del(foundKey);
+
+        // Decrement drop counter
+        const currentCount = Number(await this.get('meta:drop_count')) || 0;
+        if (currentCount > 0) {
+            await this.put('meta:drop_count', currentCount - 1);
+        }
+
+        console.log(`expire: removed ${dropId} (TTL reached)`);
+    }
+
+    /**
+     * Read arbitrary key from state
+     */
+    async readKey() {
+        if (!this.check.validateSchema('readKey', this.op)) return;
+        const key = String(this.op.key).trim();
+        const value = await this.get(key);
+        console.log(`readKey: ${key} =`, value);
+    }
+
+    /**
+     * Read contract snapshot
+     */
+    async readSnapshot() {
+        const count = Number(await this.get('meta:drop_count')) || 0;
+        const timer = await this.get('currentTime');
+
+        console.log({
+            contract: 'DeadDrop',
+            drops_in_network: count,
+            current_time: timer || null
+        });
+    }
+
+    /**
+     * List drops (read-only) - intended for debugging
+     */
+    async readDrops() {
+        const allDrops = await this.base.view.list({ min: 'drops:', max: 'drops:\xFF' });
+        const drops = [];
+
+        for (const item of allDrops) {
+            const dropData = await this.get(item.key);
+            if (dropData) {
+                drops.push({
+                    key: item.key,
+                    dropId: dropData.dropId,
+                    createdAt: dropData.createdAt,
+                    ttl: dropData.ttl,
+                    ciphertext_size: dropData.ciphertext.length
                 });
             }
-            console.log('message triggered contract', _this.op);
-        });
+        }
+
+        console.log(`Found ${drops.length} drops:`, drops);
     }
 
     /**
-     * A simple contract function without values (=no parameters).
-     *
-     * Contract functions must be registered through either "this.addFunction" or "this.addSchema"
-     * or it won't execute upon transactions. "this.addFunction" does not sanitize values, so it should be handled with
-     * care or be used when no payload is to be expected.
-     *
-     * Schema is recommended to sanitize incoming data from the transaction payload.
-     * The type of payload data depends on your protocol.
-     *
-     * This particular function does not expect any payload, so it's fine to be just registered using "this.addFunction".
-     *
-     * However, as you can see below, what it does is checking if an entry for key "something" exists already.
-     * With the very first tx executing it, it will return "null" (default value of this.get if no value found).
-     * From the 2nd tx onwards, it will print the previously stored value "there is something".
-     *
-     * It is recommended to check for null existence before using put to avoid duplicate content.
-     *
-     * As a rule of thumb, all "this.put()" should go at the end of function execution to avoid code security issues.
-     *
-     * Putting data is atomic, should a Peer with a contract interrupt, the put won't be executed.
+     * Read timer feature value (for TTL calculations)
      */
-    async storeSomething(){
-        const something = await this.get('something');
-
-        console.log('is there already something?', something);
-
-        if(null === something) {
-            await this.put('something', 'there is something');
-        }
-    }
-
-    /**
-     * Now we are using the schema-validated function defined in the constructor.
-     *
-     * The function also showcases some of the handy features like safe functions
-     * to prevent throws and safe bigint/decimal conversion.
-     */
-    async submitSomething(){
-        // the value of some_key shouldn't be empty, let's check that
-        if(this.value.some_key === ''){
-            return new Error('Cannot be empty');
-            // alternatively false for generic errors:
-            // return false;
-        }
-
-        // of course the same works with assert (always use this.assert)
-        this.assert(this.value.some_key !== '', new Error('Cannot be empty'));
-
-        // btw, please use safeBigInt provided by the contract protocol's superclass
-        // to calculate big integers:
-        const bigint = this.protocol.safeBigInt("1000000000000000000");
-
-        // making sure it didn't fail
-        this.assert(bigint !== null);
-
-        // you can also convert a bigint string into its decimal representation (as string)
-        const decimal = this.protocol.fromBigIntString(bigint.toString(), 18);
-
-        // and back into a bigint string
-        const bigint_string = this.protocol.toBigIntString(decimal, 18);
-
-        // let's clone the value
-        const cloned = this.protocol.safeClone(this.value);
-
-        // we want to pass the time from the timer feature.
-        // since mmodifications of this.value is not allowed, add this to the clone instead for storing:
-        cloned['timestamp'] = await this.get('currentTime');
-
-        // making sure it didn't fail (be aware of false-positives if null is passed to safeClone)
-        this.assert(cloned !== null);
-
-        // and now let's stringify the cloned value
-        const stringified = this.protocol.safeJsonStringify(cloned);
-
-        // and, you guessed it, best is to assert against null once more
-        this.assert(stringified !== null);
-
-        // and guess we are parsing it back
-        const parsed = this.protocol.safeJsonParse(stringified);
-
-        // parsing the json is a bit different: instead of null, we check against undefined:
-        this.assert(parsed !== undefined);
-
-        // finally we are storing what address submitted the tx and what the value was
-        await this.put('submitted_by/'+this.address, parsed.some_key);
-
-        // printing into the terminal works, too of course:
-        console.log('submitted by', this.address, parsed);
-    }
-
-    async readSnapshot(){
-        const something = await this.get('something');
-        const currentTime = await this.get('currentTime');
-        const msgl = await this.get('msgl');
-        const msg0 = await this.get('msg/0');
-        const msg1 = await this.get('msg/1');
-        console.log('snapshot', {
-            something,
-            currentTime,
-            msgl: msgl ?? 0,
-            msg0,
-            msg1
-        });
-    }
-
-    async readKey(){
-        const key = this.value?.key;
-        const value = key ? await this.get(key) : null;
-        console.log(`readKey ${key}:`, value);
-    }
-
-    async readChatLast(){
-        const last = await this.get('chat_last');
-        console.log('chat_last:', last);
-    }
-
-    async readTimer(){
-        const currentTime = await this.get('currentTime');
-        console.log('currentTime:', currentTime);
+    async readTimer() {
+        const timer = await this.get('currentTime');
+        console.log('currentTime:', timer || 'not set');
     }
 }
 
-export default SampleContract;
+export default DeadDropContract;

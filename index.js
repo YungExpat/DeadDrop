@@ -361,7 +361,7 @@ if (subnetBootstrap && subnetBootstrap === msbBootstrapHex) {
   throw new Error('Subnet bootstrap cannot equal MSB bootstrap.');
 }
 
-const peerConfig = createPeerConfig(PEER_ENV.MAINNET, {
+const peerConfigOptions = {
   storesDirectory: peerStoresDirectory,
   storeName: peerStoreNameRaw,
   bootstrap: subnetBootstrap || null,
@@ -370,8 +370,14 @@ const peerConfig = createPeerConfig(PEER_ENV.MAINNET, {
   enableBackgroundTasks: true,
   enableUpdater: true,
   replicate: true,
-  dhtBootstrap: peerDhtBootstrap || undefined,
-});
+};
+
+// Only set dhtBootstrap if explicitly provided
+if (peerDhtBootstrap && peerDhtBootstrap.length > 0) {
+  peerConfigOptions.dhtBootstrap = peerDhtBootstrap;
+}
+
+const peerConfig = createPeerConfig(PEER_ENV.MAINNET, peerConfigOptions);
 
 const ensureKeypairFile = async (keyPairPath) => {
   if (fs.existsSync(keyPairPath)) return;

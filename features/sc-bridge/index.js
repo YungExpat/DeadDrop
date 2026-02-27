@@ -2,6 +2,7 @@ import Feature from 'trac-peer/src/artifacts/feature.js';
 import { TerminalHandlers } from 'trac-peer/src/terminal/handlers.js';
 import b4a from 'b4a';
 import ws from 'bare-ws';
+import sodium from 'sodium-native';
 
 const normalizeText = (value) => {
   if (value === null || value === undefined) return '';
@@ -47,6 +48,57 @@ const parseFilter = (raw) => {
         .map((word) => word.toLowerCase())
     )
     .filter((group) => group.length > 0);
+};
+
+// DeadDrop encryption helpers
+const encryptMessage = (plaintext, recipientPubKeyHex) => {
+  // Convert hex public key to buffer
+  const recipientPubKey = b4a.from(recipientPubKeyHex, 'hex');
+  if (recipientPubKey.length !== 32) {
+    throw new Error('Invalid recipient public key (must be 32 bytes)');
+  }
+  
+  // Prepare message
+  const msg = typeof plaintext === 'string' ? b4a.from(plaintext) : plaintext;
+  
+  // Allocate ciphertext buffer (message + seal bytes)
+  const ciphertext = b4a.alloc(msg.length + sodium.crypto_box_SEALBYTES);
+  
+  // Encrypt using sealed box
+  try {
+    sodium.crypto_box_seal(ciphertext, msg, recipientPubKey);
+  } catch (e) {
+    throw new Error(`Encryption failed: ${e.message}`);
+  }
+  
+  // Return as base64
+  return b4a.toString(ciphertext, 'base64');
+};
+
+const decryptMessage = (ciphertextB64, recipientPubKeyHex, recipientSecretKeyHex) => {
+  // Convert hex keys to buffers
+  const recipientPubKey = b4a.from(recipientPubKeyHex, 'hex');
+  const recipientSecretKey = b4a.from(recipientSecretKeyHex, 'hex');
+  
+  if (recipientPubKey.length !== 32 || recipientSecretKey.length !== 32) {
+    throw new Error('Invalid keypair (must be 32 bytes each)');
+  }
+  
+  // Decode ciphertext from base64
+  const ciphertext = b4a.from(ciphertextB64, 'base64');
+  
+  // Allocate plaintext buffer
+  const plaintext = b4a.alloc(ciphertext.length - sodium.crypto_box_SEALBYTES);
+  
+  // Decrypt using sealed box
+  try {
+    sodium.crypto_box_seal_open(plaintext, ciphertext, recipientPubKey, recipientSecretKey);
+  } catch (e) {
+    throw new Error(`Decryption failed: ${e.message}`);
+  }
+  
+  // Return as UTF-8 string
+  return b4a.toString(plaintext, 'utf8');
 };
 
 const matchesFilter = (filter, text) => {
@@ -390,6 +442,139 @@ class ScBridge extends Feature {
           return;
         }
         reply({ type: 'info', info: this.info });
+        return;
+      }
+      // DeadDrop Message Types
+      case 'identity': {
+        try {
+          // Return current peer's public key (their DeadDrop address)
+          const pubKey = b4a.isBuffer(this.peer.wallet.publicKey) 
+            ? b4a.toString(this.peer.wallet.publicKey, 'hex')
+            : String(this.peer.wallet.publicKey);
+          reply({ type: 'identity', address: pubKey });
+        } catch (err) {
+          sendError(`Failed to get identity: ${err.message}`);
+        }
+        return;
+      }
+      case 'drop': {
+        try {
+          // Encrypt message and submit DROP transaction
+          const recipientPubKey = String(message.recipientPubKey || '').trim();
+          const plaintext = String(message.message || '').trim();
+          const ttl = Number(message.ttl) || 604800; // 7 days default
+
+          if (!recipientPubKey || recipientPubKey.length !== 64) {
+            sendError('Invalid recipientPubKey (must be 64-char hex)');
+            return;
+          }
+          if (!plaintext || plaintext.length === 0) {
+            sendError('Message cannot be empty');
+            return;
+          }
+          if (ttl < 60 || ttl > 604800) {
+            sendError('TTL must be between 60 and 604800 seconds');
+            return;
+          }
+
+          // Encrypt the message
+          const ciphertext = encryptMessage(plaintext, recipientPubKey);
+
+          // Submit DROP transaction via protocol
+          const dropCmd = JSON.stringify({
+            op: 'drop',
+            recipientPubKey: recipientPubKey.toLowerCase(),
+            ciphertext,
+            ttl
+          });
+
+          const dropCmd2 = {
+            op: 'drop',
+            recipientPubKey: recipientPubKey.toLowerCase(),
+            ciphertext,
+            ttl
+          };
+
+          this.cliQueue = this.cliQueue.then(() => {
+            return this._enqueueCli(`/tx --command '${JSON.stringify(dropCmd2)}'`);
+          }).then((result) => {
+            if (result.ok) {
+              reply({
+                type: 'drop_sent',
+                recipientPubKey: recipientPubKey.toLowerCase(),
+                ttl,
+                output: result.output
+              });
+            } else {
+              sendError(`Drop failed: ${result.error || 'unknown error'}`);
+            }
+          }).catch((err) => {
+            sendError(`Drop failed: ${err.message}`);
+          });
+        } catch (err) {
+          sendError(`Drop encryption failed: ${err.message}`);
+        }
+        return;
+      }
+      case 'inbox': {
+        try {
+          // List all drops addressed to current peer
+          this.cliQueue = this.cliQueue.then(() => {
+            return this._enqueueCli('/tx --command "read_drops"');
+          }).then((result) => {
+            if (result.ok) {
+              reply({
+                type: 'inbox',
+                output: result.output
+              });
+            } else {
+              sendError(`Inbox read failed: ${result.error || 'unknown error'}`);
+            }
+          }).catch((err) => {
+            sendError(`Inbox failed: ${err.message}`);
+          });
+        } catch (err) {
+          sendError(`Inbox failed: ${err.message}`);
+        }
+        return;
+      }
+      case 'claim': {
+        try {
+          // Claim and decrypt a drop
+          const dropId = String(message.dropId || '').trim();
+          
+          if (!dropId || dropId.length === 0) {
+            sendError('Missing dropId');
+            return;
+          }
+
+          // For now, submit claim transaction
+          // The contract will handle removal; the recipient needs to decrypt client-side
+          const claimCmd = {
+            op: 'claim',
+            dropId,
+            signature: 'client-claim' // Placeholder signature
+          };
+
+          this.cliQueue = this.cliQueue.then(() => {
+            return this._enqueueCli(`/tx --command '${JSON.stringify(claimCmd)}'`);
+          }).then((result) => {
+            if (result.ok) {
+              reply({
+                type: 'claim_ok',
+                dropId,
+                output: result.output,
+                note: 'Drop claimed and removed from network. Recipient must decrypt client-side with private key.'
+              });
+            } else {
+              sendError(`Claim failed: ${result.error || 'unknown error'}`);
+            }
+          }).catch((err) => {
+            sendError(`Claim failed: ${err.message}`);
+          });
+        } catch (err) {
+          sendError(`Claim failed: ${err.message}`);
+        }
         return;
       }
       default:
