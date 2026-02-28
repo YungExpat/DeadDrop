@@ -306,31 +306,13 @@ DeadDrop/
 - **Decentralization:** No central server; drops replicate across peer network
 - **TTL:** Drops auto-expire; recipients must claim to prevent accumulation
 
-## Testing
-
-```bash
-# Terminal 1: Admin peer (subnet creator)
-pear run . --peer-store-name admin --msb-store-name admin-msb
-
-# Terminal 2: Joiner peer
-pear run . --peer-store-name joiner --msb-store-name joiner-msb \
-  --subnet-bootstrap <admin-writer-key>
-
-# Test DROP via terminal
-# (on either peer)
-/tx --command '{"op":"drop","recipientPubKey":"<hex64>","ciphertext":"<base64>","ttl":3600}'
-
-# Test READ_SNAPSHOT
-/tx --command "read_snapshot"
-
-# Test READ_DROPS
-/tx --command "read_drops"
-```
-
 ## TNK Bounty
 
-**Recipient Address:** `trac1njyfa49eawzsrf0zzggh47ladxtxcdlgw0rjxm7sf3qra40luk2q087say`
+This implementation is submitted for the Trac Systems awesome-intercom bounty.
 
+**Bounty Recipient Wallet:** `trac1njyfa49eawzsrf0zzggh47ladxtxcdlgw0rjxm7sf3qra40luk2q087say`
+
+**Repository:** https://github.com/YungExpat/DeadDrop
 
 ## License
 
