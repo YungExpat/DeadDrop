@@ -23,7 +23,7 @@ DeadDrop lets a sender post an encrypted message addressed to a recipient's publ
 
 1. Clone and install:
 ```bash
-git clone https://github.com/YOUR_USERNAME/DeadDrop.git
+git clone https://github.com/YungExpat/DeadDrop
 cd DeadDrop
 npm install
 ```
@@ -329,25 +329,8 @@ pear run . --peer-store-name joiner --msb-store-name joiner-msb \
 
 ## TNK Bounty
 
-**Recipient Address:** `YOUR_TNK_WALLET_ADDRESS_HERE`
+**Recipient Address:** `trac1njyfa49eawzsrf0zzggh47ladxtxcdlgw0rjxm7sf3qra40luk2q087say`
 
-This fork qualifies for the Trac Systems DeadDrop bounty (500 TNK). To receive the bounty:
-1. Replace `YOUR_TNK_WALLET_ADDRESS_HERE` above with your Trac wallet address
-2. Test the implementation locally
-3. Submit a PR to [awesome-intercom](https://github.com/Trac-Systems/awesome-intercom)
-
-**Current Stats (as of Feb 2026):**
-- ~10 forks listed in awesome-intercom
-- ~90 bounty slots remaining
-- Bounty: 500 TNK per fork (~10.5M TNK total supply)
-
-## References
-
-- [SKILL.md](./SKILL.md) — Full operational guide for Intercom
-- [awesome-intercom](https://github.com/Trac-Systems/awesome-intercom) — Community projects built on Intercom
-- [Trac Systems](https://tracsystems.io) — Official Trac/Intercom documentation
-- [Holepunch/Hyperswarm](https://holepunch.to) — P2P networking stack
-- [libsodium](https://doc.libsodium.org/) — Cryptography reference
 
 ## License
 
@@ -376,6 +359,3 @@ MIT (see [LICENSE.md](./LICENSE.md))
   - --dht-bootstrap "<host:port,host:port>" overrides the peer's HyperDHT bootstraps
     (all peers that should discover each other must use the same list).
 ```
-
----
-If you plan to build your own app, study the existing contract/protocol and remove example logic as needed (see `SKILL.md`).
