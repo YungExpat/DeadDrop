@@ -358,4 +358,3 @@ MIT (see [LICENSE.md](./LICENSE.md))
   Optional for local testing:
   - --dht-bootstrap "<host:port,host:port>" overrides the peer's HyperDHT bootstraps
     (all peers that should discover each other must use the same list).
-```
